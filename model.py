@@ -25,18 +25,95 @@ import torch.nn.functional as F
 
 
 def knn(x, k):
+    """ Calculates for each point the k-nearest neighbors based on euclidean distance. 
+
+        Description assumes num_points=1024.
+
+        The variable pairwise_distance contains all euclidean distance from one point
+        to all the others. Shape of this variable is (32, 1024, 1024).
+
+        Args
+            x   : input point cloud with as (batch, features, points) (32, 3, 1024)
+
+                  Features are the coordinates values x,y,z in a data range
+
+            k   : k- nearest neighboring points
+
+        Returns
+
+            idx : for each point the nearest k points as index in the point cloud. Values
+                  are in the range of 0 to 1023 and sorted from closest to farthest. 
+                  
+                  With k=20 then idx = (32, 1024, 20) looking at first batch, first point
+                  an example data looks like this:
+
+                  [ 0.0000, -0.0004, -0.0004, -0.0009, -0.0009, -0.0014, -0.0017, -0.0019,
+                    -0.0021, -0.0027, -0.0028, -0.0028, -0.0028, -0.0028, -0.0030, -0.0030,
+                    -0.0032, -0.0032, -0.0033, -0.0033]
+                
+                  We see how distance increases. idx[0][0] is:
+
+                  [ 0,  334,  565,  310,  101,   19,  533,  488,  529, 1015,  528,  944,
+                    711,  452,  522,  339,  433,  435,  605,  398]
+    """
+    
+    #  compute pairwise euclidean distance of a point cloud -> adjacent matrix
     inner = -2*torch.matmul(x.transpose(2, 1), x)
     xx = torch.sum(x**2, dim=1, keepdim=True)
     pairwise_distance = -xx - inner - xx.transpose(2, 1)
  
+    # get the k nearest points for each cloud point
     idx = pairwise_distance.topk(k=k, dim=-1)[1]   # (batch_size, num_points, k)
     return idx
 
 
 def get_graph_feature(x, k=20, idx=None, dim9=False):
+    """ Constructs edge feature for each point using k-NN to generate a local graph. 
+
+        Description assumes num_points=1024.
+
+        Args
+            x       : input point cloud with as (batch, features, points) (32, 3, 1024)
+
+                      Features are the absolute coordinates values x,y,z in a data range
+
+            k       :   k- nearest neighboring points
+
+        Returns
+
+            feature : contains two feature sets the local neighbor information 1) and the
+                      global shape structure as outlined in the original paper on equation (7).
+                      This is why dimension 1 increases from 3 to 6 to shape (32, 6, 1024, 20)
+            
+                        1) local information, the coordinate difference between a data point and 
+                           its nearest neighbors (relative coordinate distances for x,y,z from 
+                           each point to the next k points).
+                      
+                           For first batch, channel and point this is feature[0][0][0] = 
+
+                           [ 0.0000, -0.0088, -0.0103,  0.0274,  0.0209,  0.0130, -0.0157,  0.0138,
+                             -0.0350, -0.0518, -0.0266, -0.0124, -0.0450,  0.0532, -0.0054,  0.0157,
+                             0.0062, -0.0535,  0.0121, -0.0105]
+                           
+                           feature[:, 0:2, :, :].min(), feature[:, 0:2, :, :].max() = 
+                           [-0.6821, 0.6242]
+
+                        2) global shape structure, the absolute coordinates of a data point and 
+                           its nearest neighbors. 
+
+                           For first batch, channel and point this is features[0][3][0] = 
+
+                           [-0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621,
+                            -0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621, -0.0621,
+                            -0.0621, -0.0621, -0.0621, -0.0621]
+
+                           feature[:, 3:6, :, :].min(), feature[:, 3:6, :, :].max() = 
+                           [-1.2568, 1.6245]
+    """
     batch_size = x.size(0)
     num_points = x.size(2)
     x = x.view(batch_size, -1, num_points)
+    
     if idx is None:
         if dim9 == False:
             idx = knn(x, k=k)   # (batch_size, num_points, k)
@@ -52,14 +129,17 @@ def get_graph_feature(x, k=20, idx=None, dim9=False):
  
     _, num_dims, _ = x.size()
 
-    x = x.transpose(2, 1).contiguous()   # (batch_size, num_points, num_dims)  -> (batch_size*num_points, num_dims) #   batch_size * num_points * k + range(0, batch_size*num_points)
-    feature = x.view(batch_size*num_points, -1)[idx, :]
-    feature = feature.view(batch_size, num_points, k, num_dims) 
-    x = x.view(batch_size, num_points, 1, num_dims).repeat(1, 1, k, 1)
+    x = x.transpose(2, 1).contiguous()                                  # shape (32, 1024, 3) with coordinate values of range -1.2568 to 1.6245
+    feature = x.view(batch_size*num_points, -1)[idx, :]                 # shape (6553603) with coordinate values of range -1.2568 to 1.6245
+    feature = feature.view(batch_size, num_points, k, num_dims)         # shape (32, 1024, 20, 3) with coordinate values of range -1.2568 to 1.6245    
+    x = x.view(batch_size, num_points, 1, num_dims).repeat(1, 1, k, 1)  # shape (32, 1024, 20, 3) with coordinate values of range -1.2568 to 1.6245
     
-    feature = torch.cat((feature-x, x), dim=3).permute(0, 3, 1, 2).contiguous()
+    # here we add the difference in coordinate between point and neighbor but
+    # also the absolute coordinate of the point ans neighbors. 
+    features = torch.cat((feature-x, x), dim=3)                         # shape (32, 1024, 20, 6)
+    feature = features.permute(0, 3, 1, 2).contiguous()                 # shape (32, 6, 1024, 20)
   
-    return feature      # (batch_size, 2*num_dims, num_points, k)
+    return feature
 
 
 class PointNet(nn.Module):
@@ -131,8 +211,25 @@ class DGCNN_cls(nn.Module):
 
     def forward(self, x):
         batch_size = x.size(0)
-        x = get_graph_feature(x, k=self.k)      # (batch_size, 3, num_points) -> (batch_size, 3*2, num_points, k)
-        x = self.conv1(x)                       # (batch_size, 3*2, num_points, k) -> (batch_size, 64, num_points, k)
+        x = get_graph_feature(x, k=self.k)      # shape (32, 6, 1024, 20)
+        
+        # 
+        # pytorch has the following definition for a convolution:
+        # 
+        #   number of channels in the input image       = 6,    this are basically the features 
+        #                                                       in this case the relative and absolute
+        #                                                       coordinates of the nearest neighbors. For
+        #                                                       a image that would be e.g. RGB channels.
+        #   number of output channels                   = 64,   this are the filters or number of kernels
+        #   kernel_size                                 = 1,    doing 1x1 convolution basically dot product
+        #                                                       over the channels, keeping dimension.
+        #   image height                                = 1024, in these case instead if image height it
+        #                                                       corresponds to the total number of points
+        #   image width                                 = 20,   instead of image width this are the nearest
+        #                                                       neighbors, our image consists of all points
+        #                                                       versus their neighbors.
+        #
+        x = self.conv1(x)                       # (32, 6, 1024, 20) -> (32, 64, 1024, 20)
         x1 = x.max(dim=-1, keepdim=False)[0]    # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points)
 
         x = get_graph_feature(x1, k=self.k)     # (batch_size, 64, num_points) -> (batch_size, 64*2, num_points, k)
@@ -149,7 +246,10 @@ class DGCNN_cls(nn.Module):
 
         x = torch.cat((x1, x2, x3, x4), dim=1)  # (batch_size, 64+64+128+256, num_points)
 
+        # in paper this is a MLP 1024, but here a CNN as well
         x = self.conv5(x)                       # (batch_size, 64+64+128+256, num_points) -> (batch_size, emb_dims, num_points)
+
+        # in paper they just mention max pooling, but add here an average pooling as well
         x1 = F.adaptive_max_pool1d(x, 1).view(batch_size, -1)           # (batch_size, emb_dims, num_points) -> (batch_size, emb_dims)
         x2 = F.adaptive_avg_pool1d(x, 1).view(batch_size, -1)           # (batch_size, emb_dims, num_points) -> (batch_size, emb_dims)
         x = torch.cat((x1, x2), 1)              # (batch_size, emb_dims*2)
