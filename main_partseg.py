@@ -48,6 +48,17 @@ def _init_():
     os.system('cp util.py outputs' + '/' + args.exp_name + '/' + 'util.py.backup')
     os.system('cp data.py outputs' + '/' + args.exp_name + '/' + 'data.py.backup')
 
+      # force 2080 Ti
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+    # do not allocate all memory to single process otherwise one process will 
+    # block the other. This one is key when using the optimizer.
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    
+    # GPU uses threads dedicated to the GPU device. If this flag is not set then GPU 
+    # uses threads shared with CPU in the main compute thread-pool.
+    os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
+
 
 def calculate_shape_IoU(pred_np, seg_np, label, class_choice, visual=False):
     if not visual:
@@ -352,14 +363,14 @@ def test(args, io):
 if __name__ == "__main__":
     # Training settings
     parser = argparse.ArgumentParser(description='Point Cloud Part Segmentation')
-    parser.add_argument('--exp_name', type=str, default='exp', metavar='N',
+    parser.add_argument('--exp_name', type=str, default='partseg_airplane_eval', metavar='N',
                         help='Name of the experiment')
     parser.add_argument('--model', type=str, default='dgcnn', metavar='N',
                         choices=['dgcnn'],
                         help='Model to use, [dgcnn]')
     parser.add_argument('--dataset', type=str, default='shapenetpart', metavar='N',
                         choices=['shapenetpart'])
-    parser.add_argument('--class_choice', type=str, default=None, metavar='N',
+    parser.add_argument('--class_choice', type=str, default='airplane', metavar='N',
                         choices=['airplane', 'bag', 'cap', 'car', 'chair',
                                  'earphone', 'guitar', 'knife', 'lamp', 'laptop', 
                                  'motor', 'mug', 'pistol', 'rocket', 'skateboard', 'table'])
@@ -382,7 +393,7 @@ if __name__ == "__main__":
                         help='enables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
-    parser.add_argument('--eval', type=bool,  default=False,
+    parser.add_argument('--eval', type=bool,  default=True,
                         help='evaluate the model')
     parser.add_argument('--num_points', type=int, default=2048,
                         help='num of points to use')
@@ -392,9 +403,9 @@ if __name__ == "__main__":
                         help='Dimension of embeddings')
     parser.add_argument('--k', type=int, default=40, metavar='N',
                         help='Num of nearest neighbors to use')
-    parser.add_argument('--model_path', type=str, default='', metavar='N',
+    parser.add_argument('--model_path', type=str, default='pretrained/model.partseg.airplane.t7', metavar='N',
                         help='Pretrained model path')
-    parser.add_argument('--visu', type=str, default='',
+    parser.add_argument('--visu', type=str, default='airplane',
                         help='visualize the model')
     parser.add_argument('--visu_format', type=str, default='ply',
                         help='file format of visualization')

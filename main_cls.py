@@ -41,6 +41,19 @@ def _init_():
     os.system('cp util.py outputs' + '/' + args.exp_name + '/' + 'util.py.backup')
     os.system('cp data.py outputs' + '/' + args.exp_name + '/' + 'data.py.backup')
 
+
+    # force 2080 Ti
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+    # do not allocate all memory to single process otherwise one process will 
+    # block the other. This one is key when using the optimizer.
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    
+    # GPU uses threads dedicated to the GPU device. If this flag is not set then GPU 
+    # uses threads shared with CPU in the main compute thread-pool.
+    os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
+
+
 def train(args, io):
     train_loader = DataLoader(ModelNet40(partition='train', num_points=args.num_points), num_workers=8,
                               batch_size=args.batch_size, shuffle=True, drop_last=True)
